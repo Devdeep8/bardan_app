@@ -1,0 +1,253 @@
+name: mandi-trip
+
+services:
+  # =========================
+  # PostgreSQL
+  # =========================
+  postgres:
+    image: postgres:15-alpine
+    container_name: mandi-trip-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: mandi-trip-db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - '5433:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mandi-trip-db"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      - app-network
+
+  # =========================
+  # Redis
+  # =========================
+  redis:
+    image: redis:7-alpine
+    container_name: mandi-trip-redis
+    restart: always
+    ports:
+      - '6380:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      - app-network
+
+  # =========================
+  # User Backend
+  # =========================
+  user-backend:
+    build:
+      context: ../user-backend
+      dockerfile: Dockerfile
+    container_name: mandi-trip-backend
+    restart: always
+    env_file:
+      - ../user-backend/.env
+    environment:
+      DB_WRITE_HOST: postgres
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # The development Redis service is intentionally unauthenticated.
+      REDIS_PASSWORD: ""
+      CHOKIDAR_USEPOLLING: true
+      PORT: 3004
+    ports:
+      - "3012:3004"
+    volumes:
+      - ../user-backend:/app
+      - /app/node_modules
+    command: npm run dev:nodemon
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # =========================
+  # Mandi Trip Worker (BullMQ consumers: trip timers + notifications)
+  # =========================
+  mandi-trip-worker:
+    build:
+      context: ../user-backend
+      dockerfile: Dockerfile
+    container_name: mandi-trip-worker
+    restart: always
+    env_file:
+      - ../user-backend/.env
+    environment:
+      DB_WRITE_HOST: postgres
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+      CHOKIDAR_USEPOLLING: true
+      PORT: 3005
+    volumes:
+      - ../user-backend:/app
+      - /app/node_modules
+    command: npm run worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # Local-only BullMQ UI; the host port is bound to loopback.
+  mandi-queue-dashboard:
+    build:
+      context: ../user-backend
+      dockerfile: Dockerfile
+    container_name: mandi-trip-queue-dashboard
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+    ports:
+      - "127.0.0.1:3014:3007"
+    volumes:
+      - ../user-backend:/app
+      - /app/node_modules
+    command: npm run queue:dashboard
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # =========================
+  # User Frontend
+  # =========================
+  # frontend:
+  #   build:
+  #     context: ../user-frontend
+  #     dockerfile: Dockerfile
+  #   container_name: user-frontend
+  #   restart: always
+  #   ports:
+  #     - "3005:3000"
+  #   volumes:
+  #     - ../user-frontend:/app
+  #     - /app/node_modules
+  #     - /app/.next
+  #   environment:
+  #     NODE_ENV: development
+  #     NEXT_PUBLIC_API_URL: http://localhost:3004
+  #     PORT: 3000
+  #   depends_on:
+  #     - backend
+  #   networks:
+  #     - app-network
+
+  # =========================
+  # Admin Backend
+  # =========================
+  admin-backend:
+    build:
+      context: ../admin-backend
+      dockerfile: Dockerfile
+    container_name: mandi-trip-admin
+    restart: always
+    env_file:
+      - ../admin-backend/.env
+    environment:
+      DB_WRITE_HOST: postgres
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CHOKIDAR_USEPOLLING: true
+      PORT: 3006
+    ports:
+      - "3013:3006"
+    volumes:
+      - ../admin-backend:/app
+      - /app/node_modules
+    command: npm run dev:nodemon
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # =========================
+  # Admin Backend Worker (runs ALL queue consumers registered in
+  # admin-backend/src/workers/registry.js — audit logs today, more later)
+  # =========================
+  admin-backend-worker:
+    build:
+      context: ../admin-backend
+      dockerfile: Dockerfile
+    container_name: mandi-trip-admin-worker
+    restart: always
+    env_file:
+      - ../admin-backend/.env
+    environment:
+      DB_WRITE_HOST: postgres
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PORT: 3007
+    volumes:
+      - ../admin-backend:/app
+      - /app/node_modules
+    command: npm run worker:dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # =========================
+  # Admin Frontend
+  # =========================
+  # admin-frontend:
+  #   build:
+  #     context: ../admin-frontend
+  #     dockerfile: Dockerfile
+  #   container_name: admin-frontend
+  #   restart: always
+  #   ports:
+  #     - "3007:3000"
+  #   volumes:
+  #     - ../admin-frontend:/app
+  #     - /app/node_modules
+  #     - /app/.next
+  #   environment:
+  #     NODE_ENV: development
+  #     NEXT_PUBLIC_API_URL: http://localhost:3006
+  #     PORT: 3000
+  #   depends_on:
+  #     - admin-backend
+  #   networks:
+  #     - app-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  app-network:
+    driver: bridge

@@ -1,0 +1,72 @@
+# Deploys the production stack to the VPS (Hostinger) on every push to main.
+#
+# One-time server setup (do this once, by hand):
+#   1. SSH in and clone the repo:  git clone https://github.com/Devdeep8/patidar-stone-crusher.git ~/patidar-stone-crusher
+#   2. Create the untracked env files (they are NOT in git):
+#        executor/.env                      (POSTGRES_PASSWORD, REDIS_PASSWORD, APP_DB_PASSWORD)
+#        user-backend/.env.production       (JWT secrets, ALLOWED_ORIGIN)
+#        admin-backend/.env.production      (JWT secrets, ALLOWED_ORIGIN)
+#   3. Add the Actions secrets below in GitHub → Settings → Secrets → Actions:
+#        DEPLOY_SSH_HOST, DEPLOY_SSH_USER, DEPLOY_SSH_KEY (private key), DEPLOY_SSH_PORT (optional, default 22)
+#
+# Order matters: BUILD first (migrations live inside the admin-backend
+# image — running migrate on a stale image is a no-op), then MIGRATE, then
+# restart containers, so the app always boots against a schema it
+# understands. Migrations are additive-only by convention.
+#
+# Seeders are NOT run here — they create demo logins (superadmin@crm.com,
+# staff@crusher.com) and must never land in production. Run them by hand on
+# staging only: docker compose -f docker-compose.production.yml run --rm admin-backend npm run db:seed
+
+name: Deploy to production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {} # manual "Run workflow" button
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false # never kill a deploy mid-migration
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v4
+        with:
+          host: ${{ secrets.DEPLOY_SSH_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_SSH_PORT || 22 }}
+          # Fail the deploy on the first error (set -e); migrations abort the
+          # whole run before any container is rebuilt with new code.
+          script: |
+            set -e
+
+            cd ~/patidar-stone-crusher
+            echo "==> Updating code"
+            git fetch origin main
+            git reset --hard origin/main
+
+            cd executor
+
+            echo "==> Building images (migrations ship inside them)"
+            docker compose -f docker-compose.production.yml build
+
+            echo "==> Running migrations (before containers restart)"
+            docker compose -f docker-compose.production.yml run --rm admin-backend npm run db:migrate
+
+            echo "==> Restarting stack"
+            docker compose -f docker-compose.production.yml up -d
+
+            echo "==> Cleaning dangling images"
+            docker image prune -f
+
+            echo "==> Health checks"
+            sleep 5
+            curl -fsS http://127.0.0.1:3004/health-check || (echo "user-backend health check FAILED"; exit 1)
+            curl -fsS http://127.0.0.1:3006/health-check || (echo "admin-backend health check FAILED"; exit 1)
+
+            echo "==> Deploy complete"

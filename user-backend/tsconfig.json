@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "allowJs": true,
+    "baseUrl": "./",
+    "paths": {
+      "@src/*": ["src/*"],
+      "@routes/*": ["src/rest-resources/routes/*"],
+      "@controllers/*": ["src/rest-resources/controllers/*"],
+      "@configs/*": ["src/configs/*"]
+    }
+  },
+  "include": ["src/**/*.js", "index.js"],
+  "exclude": ["node_modules"]
+}

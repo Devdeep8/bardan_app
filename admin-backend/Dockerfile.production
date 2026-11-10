@@ -1,0 +1,39 @@
+# Production image for the admin backend (API + worker use the same image).
+# Build:  docker build -f Dockerfile.production -t patidar-admin-backend:prod .
+# Run:    docker run --env-file .env.production -p 3006:3006 patidar-admin-backend:prod
+#         (worker: same image, command overridden to `npm run worker`)
+FROM node:20-alpine AS deps
+
+# Compile-time tools for native modules (bcrypt) — not carried to the runtime stage
+RUN apk add --no-cache python3 make g++
+
+WORKDIR /app
+
+COPY package*.json ./
+
+RUN npm ci --omit=dev
+
+# ---- Runtime ----
+FROM node:20-alpine
+
+ENV NODE_ENV=production
+
+WORKDIR /app
+
+# Non-root user
+RUN addgroup -S app && adduser -S app -G app
+
+COPY --from=deps --chown=app:app /app/node_modules ./node_modules
+COPY --chown=app:app package*.json ./
+COPY --chown=app:app tsconfig.json ./
+COPY --chown=app:app index.js ./
+COPY --chown=app:app src ./src
+COPY --chown=app:app scripts ./scripts
+# sequelize-cli config for `npm run db:migrate` from inside the container
+COPY --chown=app:app .sequelizerc ./
+
+USER app
+
+EXPOSE 3006
+
+CMD ["npm", "start"]
